@@ -74,16 +74,34 @@ def _texto_contem(texto_norm, alvo):
     return norm(alvo) in texto_norm
 
 
-def pontuar(item, pdf):
-    """Pontuação de compatibilidade item-da-planilha x PDF (quanto maior,
-    melhor o par). Retorna dict com pt e sinalizadores usados no relatório."""
-    c = pdf.get("cab") or {}
-    bernoulli = pdf.get("origem") == "bernoulli"
+def _segmentos_de(pdf):
+    """Um PDF pode trazer mais de uma prova dentro (várias frentes/
+    professores concatenados no mesmo arquivo — comum em 2ª chamada). Usa os
+    segmentos detectados em ler_pdf(); se por algum motivo não houver nenhum
+    (ex.: PDF ilegível), cai de volta para tratar o arquivo inteiro como um
+    segmento único, igual ao comportamento antigo."""
+    segs = pdf.get("segmentos")
+    if segs:
+        return segs
+    return [{
+        "pagina_ini": 1, "pagina_fim": pdf.get("paginas") or 1,
+        "cab": pdf.get("cab") or {}, "texto": pdf.get("texto", ""),
+        "linhas": pdf.get("linhas", []), "valores_q": pdf.get("valores_q", []),
+    }]
+
+
+def pontuar_segmento(item, seg, bernoulli):
+    """Pontuação de compatibilidade item-da-planilha x SEGMENTO de um PDF
+    (um PDF pode ter vários segmentos — uma prova por frente/professor).
+    Quanto maior o pt, melhor o par. Comparações de texto usam só o texto
+    DESSE segmento, não do arquivo inteiro, pra não vazar dado de uma frente
+    pra outra dentro do mesmo arquivo."""
+    c = seg.get("cab") or {}
     pt = 0
     conflito = False
 
     disc_cab = bool(item.get("disciplina") and c.get("disciplina") and normU(item["disciplina"]) == normU(c["disciplina"]))
-    disc_txt = bool(item.get("disciplina") and _texto_contem(norm(pdf.get("texto", "")), item["disciplina"]))
+    disc_txt = bool(item.get("disciplina") and _texto_contem(norm(seg.get("texto", "")), item["disciplina"]))
     disc = disc_cab or disc_txt
     if item.get("disciplina") and not disc:
         conflito = True
@@ -93,7 +111,7 @@ def pontuar(item, pdf):
         pt += 2
 
     fr_cab = bool(item.get("frente") and c.get("frente") and normU(item["frente"]) == normU(c["frente"]))
-    fr_txt = bool(item.get("frente") and _texto_contem(norm(pdf.get("texto", "")), item["frente"]))
+    fr_txt = bool(item.get("frente") and _texto_contem(norm(seg.get("texto", "")), item["frente"]))
     fr = fr_cab or fr_txt
     if item.get("frente") and bernoulli and not fr:
         conflito = True
@@ -103,7 +121,7 @@ def pontuar(item, pdf):
         pt += 1
 
     prof_cab = bool(item.get("professor") and c.get("professor") and norm(item["professor"]) in norm(c["professor"]))
-    prof_exato = bool(item.get("professor") and _texto_contem(norm(pdf.get("texto", "")), item["professor"]))
+    prof_exato = bool(item.get("professor") and _texto_contem(norm(seg.get("texto", "")), item["professor"]))
     if prof_cab:
         pt += 3
     elif prof_exato:
@@ -197,7 +215,7 @@ def conferir_cabecalhos(pdfs, esperado_natureza=None):
         # R21 — página de início de prova tem que ser ÍMPAR (nunca no verso
         # da anterior), exceto provas adaptadas (AD/N), que saem só frente.
         if not eh_adaptado(pdf["nome"]):
-            paginas_inicio = [1] + [o["pagina"] for o in pdf.get("outros_cab", [])]
+            paginas_inicio = [seg["pagina_ini"] for seg in _segmentos_de(pdf)] or [1]
             pares = sorted(set(p for p in paginas_inicio if p % 2 == 0))
             if pares:
                 r["graves"].append({
@@ -206,9 +224,13 @@ def conferir_cabecalhos(pdfs, esperado_natureza=None):
                 })
 
         # R22 — Química (ou Ciências com frente de Química) precisa ter a
-        # tabela periódica ao final do arquivo.
+        # tabela periódica ao final do arquivo. Algumas tabelas periódicas
+        # saem com o texto inteiro espelhado (mesmo efeito visto na tarja
+        # lateral — rotação de página) — por isso confere os dois sentidos.
         if eh_quimica(c, pdf.get("do_nome")):
-            if not TABELA_PERIODICA_RE.search(normU(pdf.get("texto", ""))):
+            tU_arquivo = normU(pdf.get("texto", ""))
+            achou = TABELA_PERIODICA_RE.search(tU_arquivo) or TABELA_PERIODICA_RE.search(tU_arquivo[::-1])
+            if not achou:
                 r["graves"].append({
                     "cod": "R22", "msg": "Falta a tabela periódica ao final da prova de Química",
                     "det": "",
@@ -225,14 +247,19 @@ def conferir_cabecalhos(pdfs, esperado_natureza=None):
 
         # R24 — soma dos pontos de cada questão tem que bater com o valor
         # declarado no cabeçalho (não só o valor declarado x planilha).
-        valores_q = pdf.get("valores_q") or []
-        if valores_q and c.get("valor") is not None:
-            soma = round(sum(valores_q), 2)
-            if abs(soma - c["valor"]) > 0.011:
-                r["graves"].append({
-                    "cod": "R24", "msg": f"Soma dos pontos das questões ({soma}) não bate com o Valor do cabeçalho ({c['valor']})",
-                    "det": "",
-                })
+        # Roda POR SEGMENTO (cada frente/prova dentro do arquivo), nunca
+        # somando questões de uma frente com o valor do cabeçalho de outra.
+        for seg in _segmentos_de(pdf):
+            seg_valores = seg.get("valores_q") or []
+            seg_c = seg.get("cab") or {}
+            if seg_valores and seg_c.get("valor") is not None:
+                soma = round(sum(seg_valores), 2)
+                if abs(soma - seg_c["valor"]) > 0.011:
+                    det = f"pág. {seg['pagina_ini']}-{seg['pagina_fim']}." if len(pdf.get("segmentos") or []) > 1 else ""
+                    r["graves"].append({
+                        "cod": "R24", "msg": f"Soma dos pontos das questões ({soma}) não bate com o Valor do cabeçalho ({seg_c['valor']})",
+                        "det": det,
+                    })
 
     # R20 — página idêntica em outro arquivo do lote
     por_fp = defaultdict(list)
@@ -261,14 +288,21 @@ def conferir_cabecalhos(pdfs, esperado_natureza=None):
 
 
 def hash_dup(itens_casados):
-    """PL-HASHDUP: o mesmo arquivo (hash) casado com duas linhas de planilha
-    de conteúdo diferente — provável arquivo errado reaproveitado."""
-    por_hash = defaultdict(list)
+    """PL-HASHDUP: o MESMO TRECHO (arquivo + página inicial do segmento)
+    casado com duas linhas de planilha de conteúdo diferente — provável
+    arquivo errado reaproveitado. Agrupa por (hash do arquivo, página de
+    início do segmento) em vez de só o hash do arquivo — um arquivo com
+    várias frentes concatenadas (2ª chamada com Frente A/B/C no mesmo PDF)
+    é um caso legítimo de o MESMO arquivo casar com VÁRIAS linhas da
+    planilha, contanto que cada linha aponte pra um segmento diferente."""
+    por_trecho = defaultdict(list)
     for r in itens_casados:
-        if r.get("pdf") and r["pdf"].get("hash"):
-            por_hash[r["pdf"]["hash"]].append(r)
+        pdf = r.get("pdf")
+        if pdf and pdf.get("hash"):
+            chave = (pdf["hash"], r.get("segmento_pagina_ini", 1))
+            por_trecho[chave].append(r)
     achados = []
-    for grupo in por_hash.values():
+    for grupo in por_trecho.values():
         if len(grupo) < 2:
             continue
         chaves = set(chave_conteudo(r["item"]) for r in grupo)
@@ -281,22 +315,26 @@ def hash_dup(itens_casados):
             )
             achados.append({
                 "item": r["item"], "pdf": r["pdf"], "cod": "PL-HASHDUP",
-                "msg": "Arquivo idêntico usado em outra prova",
-                "det": f'{r["pdf"]["nome"]} é idêntico a outro arquivo já usado para: {outros}.',
+                "msg": "Mesmo trecho do arquivo usado em outra prova",
+                "det": f'{r["pdf"]["nome"]} (pág. {r.get("segmento_pagina_ini","?")}) é idêntico a outro trecho já usado para: {outros}.',
             })
     return achados
 
 
 def conferir_planilha(itens, pdfs, contar_questoes_fn):
-    """Casa cada item da planilha com o melhor PDF e roda PL-QTD/PL-VALOR/
-    PL-SEMPDF (agora aviso, não bloqueia)."""
+    """Casa cada item da planilha com o melhor SEGMENTO de PDF (um arquivo
+    pode trazer várias provas concatenadas — uma por frente/professor) e
+    roda PL-QTD/PL-VALOR/PL-SEMPDF (agora aviso, não bloqueia) usando só o
+    texto/valor DESSE segmento, nunca do arquivo inteiro."""
     resultados = []
     for item in itens:
         melhor, melhor_pt = None, 0
         for pdf in pdfs:
-            s = pontuar(item, pdf)
-            if s["pt"] > melhor_pt:
-                melhor, melhor_pt = {**s, "pdf": pdf}, s["pt"]
+            bernoulli = pdf.get("origem") == "bernoulli"
+            for seg in _segmentos_de(pdf):
+                s = pontuar_segmento(item, seg, bernoulli)
+                if s["pt"] > melhor_pt:
+                    melhor, melhor_pt = {**s, "pdf": pdf, "segmento": seg}, s["pt"]
         if not melhor or melhor_pt < 3:
             resultados.append({
                 "item": item, "pdf": None, "graves": [], "avisos": [
@@ -304,11 +342,11 @@ def conferir_planilha(itens, pdfs, contar_questoes_fn):
                 ],
             })
             continue
-        pdf = melhor["pdf"]
+        pdf, seg = melhor["pdf"], melhor["segmento"]
         graves, avisos = [], []
         esperado = (item.get("qDisc") or 0) + (item.get("qObj") or 0)
         if esperado:
-            q = contar_questoes_fn(pdf)
+            q = contar_questoes_fn(seg)
             if q["qtd"] == esperado:
                 pass
             elif q["qtd"] == 0:
@@ -316,10 +354,13 @@ def conferir_planilha(itens, pdfs, contar_questoes_fn):
             else:
                 graves.append({"cod": "PL-QTD", "msg": f"Contei {q['qtd']} questões, a planilha diz {esperado}", "det": ""})
         total = (item.get("vDisc") or 0) + (item.get("vObj") or 0)
-        c = pdf.get("cab") or {}
+        c = seg.get("cab") or {}
         if total and c.get("valor") is not None and abs(c["valor"] - total) > 0.011:
             graves.append({"cod": "PL-VALOR", "msg": f"Valor deveria ser {total}, cabeçalho diz {c['valor']}", "det": ""})
-        resultados.append({"item": item, "pdf": pdf, "graves": graves, "avisos": avisos})
+        resultados.append({
+            "item": item, "pdf": pdf, "graves": graves, "avisos": avisos,
+            "segmento_pagina_ini": seg["pagina_ini"],
+        })
 
     resultados.extend(
         {"item": h["item"], "pdf": h["pdf"], "graves": [h], "avisos": []}
