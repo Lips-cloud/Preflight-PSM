@@ -11,7 +11,7 @@ só bloqueia (GRAVE) nestas 4 famílias, o resto é aviso e volta numa fase 2:
 import re
 from collections import defaultdict
 
-from .pdf_read import norm, normU
+from pdf_read import norm, normU
 
 NOME_NAT = {
     "2a_chamada": "2ª Chamada", "recuperacao": "Recuperação",
