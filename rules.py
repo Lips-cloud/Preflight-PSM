@@ -226,6 +226,37 @@ def conferir_cabecalhos(pdfs, esperado_natureza=None):
                 "det": "páginas: " + ", ".join(str(o["pagina"]) for o in resto) + ".",
             })
 
+        # R19B — mesma ideia do R19, mas olhando a TARJA que roda em toda
+        # página de conteúdo (ex.: "MATEMÁTICA | 4º Ano" no topo), não só as
+        # páginas que parecem um cabeçalho completo novo (caixas de
+        # professor/aluno/valor). Pega alteração escondida no meio do
+        # miolo que não tem essas caixas.
+        ja_flagrado = set(o["pagina"] for o in divergentes) | {1}
+        divergentes_tag = []
+        for seg in _segmentos_de(pdf):
+            seg_c = seg.get("cab") or {}
+            for tag in pdf.get("paginas_tag", []):
+                if tag["pagina"] in ja_flagrado:
+                    continue
+                if not (seg["pagina_ini"] <= tag["pagina"] <= seg["pagina_fim"]):
+                    continue
+                diverge = (
+                    (tag.get("disciplina") and seg_c.get("disciplina") and normU(tag["disciplina"]) != normU(seg_c["disciplina"]))
+                    or (tag.get("serie") and seg_c.get("serie") and not serie_bate(tag["serie"], seg_c["serie"]))
+                )
+                if diverge:
+                    divergentes_tag.append((tag, seg_c))
+                    ja_flagrado.add(tag["pagina"])
+        if divergentes_tag:
+            desc = "; ".join(
+                f'pág. {tag["pagina"]}: {" ".join(filter(None, [tag.get("disciplina"), tag.get("serie")])) or "?"} (esperado {" ".join(filter(None, [seg_c.get("disciplina"), seg_c.get("serie")])) or "?"})'
+                for tag, seg_c in divergentes_tag
+            )
+            r["graves"].append({
+                "cod": "R19", "msg": "Página no meio do arquivo é de outra série/disciplina",
+                "det": desc + ".",
+            })
+
         # R21 — página de início de prova tem que ser ÍMPAR (nunca no verso
         # da anterior), exceto provas adaptadas (AD/N), que saem só frente.
         if not eh_adaptado(pdf["nome"]):
