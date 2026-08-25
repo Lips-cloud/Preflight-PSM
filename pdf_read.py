@@ -215,11 +215,30 @@ def parse_header(page, altura_cabecalho=0.30, disciplinas=None):
         if cab["tarja"] is None and len(txt.strip()) <= 40:
             cab["tarja"] = txt.strip()
 
-    # a disciplina do título/corpo do cabeçalho tem prioridade, mas se não
-    # achar (título com palavras coladas tipo "DEQUÍMICA" sem "\b" batendo),
-    # cai pra tarja lateral — mais confiável em página que não é a 1ª de um
-    # arquivo com várias frentes concatenadas.
-    cab["disciplina"] = _achar_disciplina(titU, disciplinas) or _achar_disciplina(tU, disciplinas) or tarja_disc
+    # turno (Manhã/Tarde/Noite) — em alguns templates (EF Anos Finais) vem
+    # na MESMA tarja lateral da disciplina, junto, tipo "HISTÓRIA   MANHÃ"
+    # (às vezes espelhado, "ÃHNAM   AIRÓTSIH"). Confere os dois sentidos.
+    _TURNOS = {"MANHA": "Manhã", "TARDE": "Tarde", "NOITE": "Noite", "INTEGRAL": "Integral"}
+    cab["turno"] = None
+    for l in linhas_g:
+        for cand in (normU(l["texto"]), normU(l["texto"])[::-1]):
+            m = re.search(r"\b(MANHA|TARDE|NOITE|INTEGRAL)\b", cand)
+            if m:
+                cab["turno"] = _TURNOS[m.group(1)]
+                break
+        if cab["turno"]:
+            break
+
+    # a TARJA lateral tem prioridade: é o campo pensado pra dizer só a
+    # disciplina, sem ambiguidade. O título/corpo do cabeçalho é usado como
+    # reforço, mas pode enganar de dois jeitos vistos em arquivos reais:
+    # (1) título colado sem espaço ("DEQUÍMICA"/"DEPORTUGUÊS") faz o \b do
+    # regex falhar; (2) quando isso acontece, a busca cai pro texto da zona
+    # inteira, que também contém a linha "Frente Literatura/Redação/
+    # Gramática" — e como esses nomes de frente TAMBÉM são disciplinas
+    # válidas (existem sozinhas em Anos Iniciais), a frente errada acaba
+    # sendo lida como se fosse a disciplina da prova.
+    cab["disciplina"] = tarja_disc or _achar_disciplina(titU, disciplinas) or _achar_disciplina(tU, disciplinas)
 
     m = RE_ETAPA.search(titU) or RE_ETAPA.search(tU) or RE_ETAPA_FOLGADA.search(titU) or RE_ETAPA_FOLGADA.search(tU)
     if m:
@@ -357,6 +376,9 @@ def parse_filename(nome, disciplinas=None):
     m = RE_ANO.search(t)
     if m:
         out["ano"] = int(m.group(1))
+    m = re.search(r"\b(MANHA|TARDE|NOITE|INTEGRAL)\b", t)
+    if m:
+        out["turno"] = {"MANHA": "Manhã", "TARDE": "Tarde", "NOITE": "Noite", "INTEGRAL": "Integral"}[m.group(1)]
     return out
 
 
