@@ -197,20 +197,29 @@ def parse_header(page, altura_cabecalho=0.30, disciplinas=None):
         if not cab["natureza"]:
             cab["natureza"] = "regular"
 
-    cab["disciplina"] = _achar_disciplina(titU, disciplinas) or _achar_disciplina(tU, disciplinas)
-
-    # tarja: texto girado nas margens laterais
+    # tarja: texto girado nas margens laterais. Dependendo da rotação da
+    # fonte, o texto pode sair invertido ("ACIMÍUQ" em vez de "QUÍMICA") —
+    # por isso tenta casar tanto o texto normal quanto o texto ao contrário.
     beira = sorted(
         [l for l in linhas_g if l["x0"] >= 0.82 * largura or l["x1"] <= 0.18 * largura],
         key=lambda l: -len(l["texto"]),
     )
+    tarja_disc = None
     for l in beira:
-        d = _achar_disciplina(normU(l["texto"]), disciplinas)
+        txt = l["texto"]
+        d = _achar_disciplina(normU(txt), disciplinas) or _achar_disciplina(normU(txt[::-1]), disciplinas)
         if d:
+            tarja_disc = d
             cab["tarja"] = d
             break
-        if cab["tarja"] is None and len(l["texto"].strip()) <= 40:
-            cab["tarja"] = l["texto"].strip()
+        if cab["tarja"] is None and len(txt.strip()) <= 40:
+            cab["tarja"] = txt.strip()
+
+    # a disciplina do título/corpo do cabeçalho tem prioridade, mas se não
+    # achar (título com palavras coladas tipo "DEQUÍMICA" sem "\b" batendo),
+    # cai pra tarja lateral — mais confiável em página que não é a 1ª de um
+    # arquivo com várias frentes concatenadas.
+    cab["disciplina"] = _achar_disciplina(titU, disciplinas) or _achar_disciplina(tU, disciplinas) or tarja_disc
 
     m = RE_ETAPA.search(titU) or RE_ETAPA.search(tU) or RE_ETAPA_FOLGADA.search(titU) or RE_ETAPA_FOLGADA.search(tU)
     if m:
@@ -362,7 +371,11 @@ def contar_questoes(texto, linhas):
         conjuntos.append(s)
     inicio = set()
     for l in linhas or []:
-        m = re.match(r"^\s*0*(\d{1,2})\s*[.)]\s*\S", l)
+        # exige DOIS dígitos ("01.", "02.") — é o padrão real de numeração
+        # de questão do gabarito Bernoulli/Módulo. Um único dígito sem zero
+        # à esquerda ("5.") é ambíguo demais: já causou falso positivo com
+        # referência bibliográfica no meio do texto ("5. ed. Porto Alegre...").
+        m = re.match(r"^\s*(\d{2})\s*[.)]\s*\S", l)
         if m:
             inicio.add(int(m.group(1)))
     conjuntos.append(inicio)
@@ -404,11 +417,20 @@ QVALOR_RE = re.compile(r"\(\s*([0-9]{1,2}[,.][0-9]{1,2})\s*\)")
 
 
 def ler_pdf(caminho, nome=None, disciplinas=None, max_paginas=40):
+    """Lê um PDF que pode conter MAIS DE UMA prova dentro (lote com várias
+    frentes/professores concatenados — comum em arquivos de "2ª chamada",
+    onde cada frente vira um PDF só). Por isso, além dos campos "de todo o
+    arquivo" (texto, valores_q, cab da 1ª página — mantidos por
+    compatibilidade), também monta `segmentos`: um por cabeçalho de prova
+    encontrado, com seu próprio texto/linhas/valores/cab — usado para não
+    misturar a contagem de questões e o valor de uma frente com o de outra
+    dentro do mesmo arquivo."""
     nome = nome or caminho.split("/")[-1]
     out = {
         "nome": nome, "texto": "", "paginas": None, "erro": None, "cab": None,
         "do_nome": parse_filename(nome, disciplinas), "linhas": [], "outros_cab": [],
         "valores_q": [], "paginas_fp": [], "origem": "indefinida", "origem_como": "",
+        "segmentos": [],
     }
     out["hash"] = hash_arquivo(caminho)
     try:
@@ -416,11 +438,21 @@ def ler_pdf(caminho, nome=None, disciplinas=None, max_paginas=40):
             out["paginas"] = len(pdf.pages)
             limite = min(len(pdf.pages), max_paginas)
             partes = []
+            paginas_textos = []
+            paginas_linhas = []
+            cabecalhos = []  # {"pagina": 1-based, "cab": dict} — todo cabeçalho de prova achado
             for p in range(limite):
                 page = pdf.pages[p]
                 cab_pag = parse_header(page, disciplinas=disciplinas)
-                linhas_h, _, _, _ = extract_lines(page)
-                textos = [l["texto"] for l in linhas_h]
+                linhas_h, linhas_g, _, _ = extract_lines(page)
+                # página inteira rotacionada (ex.: tabela periódica impressa
+                # de cabeça pra baixo) sai inteira como texto "girado", e sem
+                # isso ficava de fora do texto do arquivo — nunca detectada.
+                textos = [l["texto"] for l in linhas_h] + [
+                    l["texto"] for l in linhas_g if len(l["texto"].strip()) > 3
+                ]
+                paginas_textos.append(textos)
+                paginas_linhas.append(textos)
                 partes.append(" ".join(textos))
                 out["linhas"].extend(textos)
                 for m in QVALOR_RE.finditer(" ".join(textos)):
@@ -433,16 +465,51 @@ def ler_pdf(caminho, nome=None, disciplinas=None, max_paginas=40):
                     out["paginas_fp"].append({"pagina": p + 1, "fp": fp})
                 if p == 0:
                     out["cab"] = cab_pag
+                    cabecalhos.append({"pagina": 1, "cab": cab_pag})
                     if not linhas_h:
                         out["erro"] = "PDF sem texto na 1ª página (parece digitalizado — precisaria de OCR)"
                 else:
                     marcados = sum(1 for k in ("professor", "aluno", "nota", "valor") if cab_pag["blocos"].get(k))
-                    if p < 7 and (cab_pag["natureza"] or cab_pag["codigo"]) and marcados >= 2:
-                        out["outros_cab"].append({
-                            "pagina": p + 1, "titulo": cab_pag["titulo"], "natureza": cab_pag["natureza"],
-                            "disciplina": cab_pag["disciplina"], "etapa": cab_pag["etapa"], "serie": cab_pag["serie"],
-                        })
+                    # sinal de "página com cabeçalho de prova nova": ou tem
+                    # natureza/código reconhecido junto com 2+ blocos, ou tem
+                    # 3+ dos 4 blocos estruturais (professor/aluno/nota/valor)
+                    # sozinho — isso cobre o caso real de arquivos com várias
+                    # frentes concatenadas cujo título vem sem espaço entre
+                    # palavras ("2ªCHAMADA DEQUÍMICA") e por isso não bate com
+                    # nenhum token de natureza, mas o cabeçalho (caixas de
+                    # professor/aluno/valor/nota) claramente recomeça ali.
+                    eh_novo_cabecalho = (
+                        ((cab_pag["natureza"] or cab_pag["codigo"]) and marcados >= 2)
+                        or marcados >= 3
+                    )
+                    if eh_novo_cabecalho:
+                        cabecalhos.append({"pagina": p + 1, "cab": cab_pag})
+                        if p < 7:
+                            out["outros_cab"].append({
+                                "pagina": p + 1, "titulo": cab_pag["titulo"], "natureza": cab_pag["natureza"],
+                                "disciplina": cab_pag["disciplina"], "etapa": cab_pag["etapa"], "serie": cab_pag["serie"],
+                            })
             out["texto"] = "\n".join(partes)
+
+            # monta os segmentos: um por cabeçalho encontrado, cobrindo até a
+            # página anterior ao próximo cabeçalho (ou o fim do arquivo).
+            for i, h in enumerate(cabecalhos):
+                ini = h["pagina"]
+                fim = cabecalhos[i + 1]["pagina"] - 1 if i + 1 < len(cabecalhos) else limite
+                idxs = range(ini - 1, fim)
+                seg_linhas = [t for i2 in idxs for t in paginas_linhas[i2]]
+                seg_texto = "\n".join(" ".join(paginas_textos[i2]) for i2 in idxs)
+                seg_valores = []
+                for i2 in idxs:
+                    for m in QVALOR_RE.finditer(" ".join(paginas_textos[i2])):
+                        try:
+                            seg_valores.append(float(m.group(1).replace(",", ".")))
+                        except ValueError:
+                            pass
+                out["segmentos"].append({
+                    "pagina_ini": ini, "pagina_fim": fim, "cab": h["cab"],
+                    "texto": seg_texto, "linhas": seg_linhas, "valores_q": seg_valores,
+                })
     except Exception as e:  # noqa: BLE001
         out["erro"] = f"falha ao abrir: {e}"
 
