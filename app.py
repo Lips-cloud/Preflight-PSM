@@ -4,7 +4,7 @@ from pathlib import Path
 import streamlit as st
 
 from pdf_read import ler_pdf, contar_questoes, DISCIPLINAS_PADRAO
-from rules import conferir_cabecalhos, conferir_planilha, NOME_NAT
+from rules import conferir_cabecalhos, conferir_planilha, NOME_NAT, eh_quimica, eh_adaptado, TABELA_PERIODICA_RE, INFINITO, normU
 from abas import ABAS, parse_planilha, chave_conteudo_item
 
 st.set_page_config(page_title="Preflight PSM", page_icon="🔎", layout="wide")
@@ -123,6 +123,28 @@ if arquivos:
                         st.caption(g["det"])
         if not algum_grave:
             st.caption("Nenhum erro grave encontrado.")
+
+        st.markdown("#### Itens extras verificados")
+        algum_check = False
+        for pdf in pdfs:
+            checks = []
+            c = pdf.get("cab") or {}
+            if eh_quimica(c, pdf.get("do_nome")):
+                tU_arq = normU(pdf.get("texto", ""))
+                achou = bool(TABELA_PERIODICA_RE.search(tU_arq) or TABELA_PERIODICA_RE.search(tU_arq[::-1]))
+                checks.append(("Tabela periódica", achou))
+            if eh_adaptado(pdf["nome"]):
+                achou = INFINITO in (pdf.get("texto") or "")
+                checks.append(("Símbolo ∞ de prova adaptada", achou))
+            if not checks:
+                continue
+            algum_check = True
+            with st.container(border=True):
+                st.markdown(f"**{pdf['nome']}**")
+                for label, ok in checks:
+                    st.markdown(f"- {'✅' if ok else '🔴'} {label}: {'encontrado' if ok else 'NÃO encontrado'}")
+        if not algum_check:
+            st.caption("Nenhum item extra a verificar neste lote (sem Química nem prova adaptada).")
 
         st.markdown("#### Confira antes de enviar (avisos)")
         algum_aviso = False
