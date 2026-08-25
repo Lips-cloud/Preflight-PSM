@@ -3,8 +3,8 @@ from pathlib import Path
 
 import streamlit as st
 
-from engine.pdf_read import ler_pdf, contar_questoes, DISCIPLINAS_PADRAO
-from engine.rules import conferir_cabecalhos, conferir_planilha, NOME_NAT
+from pdf_read import ler_pdf, contar_questoes, DISCIPLINAS_PADRAO
+from rules import conferir_cabecalhos, conferir_planilha, NOME_NAT
 
 st.set_page_config(page_title="Preflight PSM", page_icon="🔎", layout="wide")
 
