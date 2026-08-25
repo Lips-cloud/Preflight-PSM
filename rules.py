@@ -18,6 +18,27 @@ NOME_NAT = {
     "simulado": "Simulado", "admissao": "Admissão", "regular": "Regular",
 }
 
+# --- ajustes pedidos em 2026-08 -------------------------------------------
+# arquivo adaptado: nome com "AD<n>" ou "N<n>" (ex.: ..._AD1_..., ..._N2_...)
+ADAPT_RE = re.compile(r"(?:^|[_\-.\s])(AD|N)\d{1,3}(?=[_\-.\s]|$)", re.IGNORECASE)
+TABELA_PERIODICA_RE = re.compile(r"TABELA\s*PERI[OÓ]DICA")
+INFINITO = "∞"  # ∞
+
+
+def eh_adaptado(nome):
+    return bool(ADAPT_RE.search(nome or ""))
+
+
+def eh_quimica(cab, do_nome):
+    disc = (cab.get("disciplina") if cab else None) or (do_nome or {}).get("disciplina")
+    if disc == "Química":
+        return True
+    if disc == "Ciências":
+        frente = normU((cab or {}).get("frente") or "")
+        if "QUIM" in frente:
+            return True
+    return False
+
 
 def numero_serie(txt):
     m = re.search(r"\b([0-9]{1,2})\s*[AO]\b", normU(txt or ""))
@@ -172,6 +193,46 @@ def conferir_cabecalhos(pdfs, esperado_natureza=None):
                 "cod": "R10", "msg": "Arquivo tem cabeçalho de prova em outra página",
                 "det": "páginas: " + ", ".join(str(o["pagina"]) for o in resto) + ".",
             })
+
+        # R21 — página de início de prova tem que ser ÍMPAR (nunca no verso
+        # da anterior), exceto provas adaptadas (AD/N), que saem só frente.
+        if not eh_adaptado(pdf["nome"]):
+            paginas_inicio = [1] + [o["pagina"] for o in pdf.get("outros_cab", [])]
+            pares = sorted(set(p for p in paginas_inicio if p % 2 == 0))
+            if pares:
+                r["graves"].append({
+                    "cod": "R21", "msg": "Prova começando no verso (página par) — precisa iniciar em página ímpar",
+                    "det": "pág. " + ", ".join(str(p) for p in pares) + ".",
+                })
+
+        # R22 — Química (ou Ciências com frente de Química) precisa ter a
+        # tabela periódica ao final do arquivo.
+        if eh_quimica(c, pdf.get("do_nome")):
+            if not TABELA_PERIODICA_RE.search(normU(pdf.get("texto", ""))):
+                r["graves"].append({
+                    "cod": "R22", "msg": "Falta a tabela periódica ao final da prova de Química",
+                    "det": "",
+                })
+
+        # R23 — prova adaptada (AD/N no nome do arquivo) precisa ter o
+        # símbolo ∞ do Bernoulli em algum lugar do cabeçalho.
+        if eh_adaptado(pdf["nome"]):
+            if INFINITO not in (pdf.get("texto") or ""):
+                r["graves"].append({
+                    "cod": "R23", "msg": "Prova adaptada sem o símbolo ∞ (infinito) de identificação",
+                    "det": "",
+                })
+
+        # R24 — soma dos pontos de cada questão tem que bater com o valor
+        # declarado no cabeçalho (não só o valor declarado x planilha).
+        valores_q = pdf.get("valores_q") or []
+        if valores_q and c.get("valor") is not None:
+            soma = round(sum(valores_q), 2)
+            if abs(soma - c["valor"]) > 0.011:
+                r["graves"].append({
+                    "cod": "R24", "msg": f"Soma dos pontos das questões ({soma}) não bate com o Valor do cabeçalho ({c['valor']})",
+                    "det": "",
+                })
 
     # R20 — página idêntica em outro arquivo do lote
     por_fp = defaultdict(list)
