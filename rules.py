@@ -68,6 +68,13 @@ def chave_conteudo(item):
     ])
 
 
+def _disciplina_base(s):
+    # "Português (Conj.)" -> "Português" — a planilha usa esse sufixo pra
+    # indicar que a disciplina é composta (Redação/Gramática dentro de
+    # Português), mas o cabeçalho da prova só imprime o nome base.
+    return re.sub(r"\s*\([^)]*\)\s*$", "", s or "").strip()
+
+
 def _texto_contem(texto_norm, alvo):
     if not alvo:
         return False
@@ -100,8 +107,9 @@ def pontuar_segmento(item, seg, bernoulli):
     pt = 0
     conflito = False
 
-    disc_cab = bool(item.get("disciplina") and c.get("disciplina") and normU(item["disciplina"]) == normU(c["disciplina"]))
-    disc_txt = bool(item.get("disciplina") and _texto_contem(norm(seg.get("texto", "")), item["disciplina"]))
+    item_disc_base = _disciplina_base(item.get("disciplina"))
+    disc_cab = bool(item_disc_base and c.get("disciplina") and normU(item_disc_base) == normU(c["disciplina"]))
+    disc_txt = bool(item_disc_base and _texto_contem(norm(seg.get("texto", "")), item_disc_base))
     disc = disc_cab or disc_txt
     if item.get("disciplina") and not disc:
         conflito = True
@@ -130,13 +138,19 @@ def pontuar_segmento(item, seg, bernoulli):
     if item.get("serie") and c.get("serie") and serie_bate(item["serie"], c["serie"]):
         pt += 2
 
+    turno_bate = None
+    if item.get("turno") and c.get("turno"):
+        turno_bate = normU(item["turno"]) == normU(c["turno"])
+        if turno_bate:
+            pt += 2
+
     if conflito:
         pt = 0
 
     return {
         "pt": pt, "bernoulli": bernoulli, "disc": disc, "disc_cab": disc_cab,
         "fr": fr, "fr_cab": fr_cab, "prof_cab": prof_cab, "prof_exato": prof_exato,
-        "conflito": conflito,
+        "conflito": conflito, "turno_bate": turno_bate,
     }
 
 
@@ -305,6 +319,18 @@ def hash_dup(itens_casados):
     for grupo in por_trecho.values():
         if len(grupo) < 2:
             continue
+        # duas linhas da planilha podem legitimamente casar com o MESMO
+        # trecho quando é um bloco combinado (ex.: "Redação e Gramática"
+        # impressas juntas, uma prova só, dividida em duas linhas só pra
+        # corrigir com professores diferentes) — nesse caso série e
+        # disciplina são as mesmas, só frente/professor mudam. Só é
+        # reaproveitamento ERRADO quando SÉRIE ou DISCIPLINA divergem.
+        chaves_conteudo = set(
+            (normU(r["item"].get("serie")), normU(_disciplina_base(r["item"].get("disciplina"))))
+            for r in grupo
+        )
+        if len(chaves_conteudo) < 2:
+            continue
         chaves = set(chave_conteudo(r["item"]) for r in grupo)
         if len(chaves) < 2:
             continue
@@ -325,8 +351,16 @@ def conferir_planilha(itens, pdfs, contar_questoes_fn):
     """Casa cada item da planilha com o melhor SEGMENTO de PDF (um arquivo
     pode trazer várias provas concatenadas — uma por frente/professor) e
     roda PL-QTD/PL-VALOR/PL-SEMPDF (agora aviso, não bloqueia) usando só o
-    texto/valor DESSE segmento, nunca do arquivo inteiro."""
-    resultados = []
+    texto/valor DESSE segmento, nunca do arquivo inteiro.
+
+    Duas ou mais linhas da planilha podem legitimamente casar com o MESMO
+    segmento — caso real: "Redação" e "Gramática" saem como um único bloco
+    de prova (mesmo cabeçalho, mesmo Valor somado), mas a planilha separa a
+    correção em duas linhas por professor. Nesse caso a conferência de
+    questões/valor é feita pela SOMA do grupo contra o segmento, não linha
+    a linha — senão cada linha sozinha nunca bate com o total do bloco
+    inteiro."""
+    casados = []  # [{"item", "pdf", "segmento"}] ou {"item","pdf":None} se não achou
     for item in itens:
         melhor, melhor_pt = None, 0
         for pdf in pdfs:
@@ -336,27 +370,54 @@ def conferir_planilha(itens, pdfs, contar_questoes_fn):
                 if s["pt"] > melhor_pt:
                     melhor, melhor_pt = {**s, "pdf": pdf, "segmento": seg}, s["pt"]
         if not melhor or melhor_pt < 3:
+            casados.append({"item": item, "pdf": None, "segmento": None})
+        else:
+            casados.append({"item": item, "pdf": melhor["pdf"], "segmento": melhor["segmento"]})
+
+    grupos = defaultdict(list)
+    for c in casados:
+        if c["pdf"]:
+            grupos[(c["pdf"]["nome"], c["segmento"]["pagina_ini"])].append(c)
+
+    resultados = []
+    for c in casados:
+        if not c["pdf"]:
             resultados.append({
-                "item": item, "pdf": None, "graves": [], "avisos": [
+                "item": c["item"], "pdf": None, "graves": [], "avisos": [
                     {"cod": "PL-SEMPDF", "msg": "Nenhum PDF corresponde a este item", "det": ""}
                 ],
             })
             continue
-        pdf, seg = melhor["pdf"], melhor["segmento"]
+        item, pdf, seg = c["item"], c["pdf"], c["segmento"]
+        grupo = grupos[(pdf["nome"], seg["pagina_ini"])]
+        multiplo = len(grupo) > 1
         graves, avisos = [], []
+
+        # turno errado — planilha diz Manhã/Tarde/Noite e o PDF casado é de
+        # outro turno (mesma família de "conteúdo de outra série/tipo").
+        seg_cab = seg.get("cab") or {}
+        if item.get("turno") and seg_cab.get("turno") and normU(item["turno"]) != normU(seg_cab["turno"]):
+            graves.append({
+                "cod": "PL-TURNO", "msg": f"Planilha diz turno {item['turno']}, mas o PDF casado é do turno {seg_cab['turno']}",
+                "det": "",
+            })
+        esperado_grupo = sum((g["item"].get("qDisc") or 0) + (g["item"].get("qObj") or 0) for g in grupo)
         esperado = (item.get("qDisc") or 0) + (item.get("qObj") or 0)
-        if esperado:
+        if esperado_grupo:
             q = contar_questoes_fn(seg)
-            if q["qtd"] == esperado:
+            sufixo = " (somando as linhas que dividem essa mesma prova)" if multiplo else ""
+            if q["qtd"] == esperado_grupo:
                 pass
             elif q["qtd"] == 0:
-                avisos.append({"cod": "PL-QTD", "msg": f"Não consegui contar as questões (a planilha diz {esperado})", "det": ""})
+                avisos.append({"cod": "PL-QTD", "msg": f"Não consegui contar as questões (a planilha diz {esperado}{sufixo})", "det": ""})
             else:
-                graves.append({"cod": "PL-QTD", "msg": f"Contei {q['qtd']} questões, a planilha diz {esperado}", "det": ""})
+                graves.append({"cod": "PL-QTD", "msg": f"Contei {q['qtd']} questões, a planilha diz {esperado_grupo}{sufixo}", "det": ""})
+        total_grupo = sum((g["item"].get("vDisc") or 0) + (g["item"].get("vObj") or 0) for g in grupo)
         total = (item.get("vDisc") or 0) + (item.get("vObj") or 0)
-        c = seg.get("cab") or {}
-        if total and c.get("valor") is not None and abs(c["valor"] - total) > 0.011:
-            graves.append({"cod": "PL-VALOR", "msg": f"Valor deveria ser {total}, cabeçalho diz {c['valor']}", "det": ""})
+        c_seg = seg.get("cab") or {}
+        if total_grupo and c_seg.get("valor") is not None and abs(c_seg["valor"] - total_grupo) > 0.011:
+            sufixo = " (somando as linhas que dividem essa mesma prova)" if multiplo else ""
+            graves.append({"cod": "PL-VALOR", "msg": f"Valor deveria ser {total_grupo}{sufixo}, cabeçalho diz {c_seg['valor']}", "det": ""})
         resultados.append({
             "item": item, "pdf": pdf, "graves": graves, "avisos": avisos,
             "segmento_pagina_ini": seg["pagina_ini"],
