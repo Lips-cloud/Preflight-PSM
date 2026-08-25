@@ -114,7 +114,7 @@ RE_SO_NUM = re.compile(r"^\(?\s*([0-9]{1,2}\s*[,.]\s*[0-9]{1,2})\s*\)?$")
 RE_NUM_FIM = re.compile(r"([0-9]{1,2}\s*[,.]\s*[0-9]{1,2})\s*$")
 RE_NUM_QQ = re.compile(r"\b([0-9]{1,2}\s*[,.]\s*[0-9]{1,2})(?!\d)")
 RE_ANO = re.compile(r"\b(20[0-9]{2})\b")
-RE_CODIGO = re.compile(r"(?<![A-Z0-9])(A\s?[1-9]|U\s?[1-9]|SA\s?\d{1,2}|SE\s?\d{1,2}|PAB|PBB|AD\s?[1-4])(?![A-Z0-9])")
+RE_CODIGO = re.compile(r"(?<![A-Z0-9])(A\s?[1-9][0-9]?|U\s?[1-9][0-9]?|SA\s?\d{1,2}|SE\s?\d{1,2}|PAB|PBB|AD\s?[1-4])(?![A-Z0-9])")
 
 NOME_NAT = {
     "2a_chamada": "2ª Chamada",
@@ -452,7 +452,7 @@ def ler_pdf(caminho, nome=None, disciplinas=None, max_paginas=40):
         "nome": nome, "texto": "", "paginas": None, "erro": None, "cab": None,
         "do_nome": parse_filename(nome, disciplinas), "linhas": [], "outros_cab": [],
         "valores_q": [], "paginas_fp": [], "origem": "indefinida", "origem_como": "",
-        "segmentos": [],
+        "segmentos": [], "paginas_tag": [],
     }
     out["hash"] = hash_arquivo(caminho)
     try:
@@ -485,6 +485,17 @@ def ler_pdf(caminho, nome=None, disciplinas=None, max_paginas=40):
                 fp = fp_pagina(textos)
                 if fp:
                     out["paginas_fp"].append({"pagina": p + 1, "fp": fp})
+                # tarja de disciplina/série roda em TODA página do conteúdo
+                # (ex.: "MATEMÁTICA | 4º Ano" no topo de cada página) — grava
+                # de toda página, não só das que parecem um cabeçalho de
+                # prova novo, pra pegar uma tarja divergente escondida no
+                # meio do miolo sem caixa de professor/aluno/valor.
+                if cab_pag.get("disciplina") or cab_pag.get("serie"):
+                    out["paginas_tag"].append({
+                        "pagina": p + 1, "disciplina": cab_pag.get("disciplina"),
+                        "serie": cab_pag.get("serie"), "natureza": cab_pag.get("natureza"),
+                        "etapa": cab_pag.get("etapa"),
+                    })
                 if p == 0:
                     out["cab"] = cab_pag
                     cabecalhos.append({"pagina": 1, "cab": cab_pag})
