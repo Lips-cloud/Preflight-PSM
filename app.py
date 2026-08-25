@@ -5,6 +5,7 @@ import streamlit as st
 
 from pdf_read import ler_pdf, contar_questoes, DISCIPLINAS_PADRAO
 from rules import conferir_cabecalhos, conferir_planilha, NOME_NAT
+from abas import ABAS, parse_planilha, chave_conteudo_item
 
 st.set_page_config(page_title="Preflight PSM", page_icon="🔎", layout="wide")
 
@@ -17,49 +18,58 @@ st.caption(
 with st.expander("Como funciona", expanded=False):
     st.markdown(
         "**Passo 1** — cole (opcional) o recorte da planilha, uma linha por prova, "
-        "colunas separadas por TAB (copiado direto do Excel/Sheets): "
-        "`Descrição  Série  Disciplina  Frente  Professor  QtdDiscursivas  ValorDiscursivas  QtdObjetivas  ValorObjetivas`\n\n"
+        "colunas separadas por TAB (copiado direto do Excel/Sheets), na mesma ordem "
+        "da planilha Controle: `Descrição · Série · ID Adaptações Colégio · Disciplina · "
+        "Frente · Professor · Qtd. Discursivas · Valor Discursivas · Qtd. Objetivas · "
+        "Valor Objetivas`. Linhas duplicadas só por causa da coluna de adaptação "
+        "(código EN/AD) são reconhecidas como a mesma prova, não contam em dobro.\n\n"
         "**Passo 2** — envie os PDFs.\n\n"
         "**Passo 3** — resultado: só aparece o que está ERRADO nas 4 famílias "
         "graves (série/tipo de outro conteúdo, arquivo/página reaproveitado, "
         "tipo de prova errado no lote, conteúdo faltando). O resto é aviso."
     )
 
-st.subheader("Passo 1 — planilha (opcional)")
-texto_planilha = st.text_area(
-    "Cole aqui as linhas da planilha (com TAB entre colunas)", height=120,
-    placeholder="A2\t1º Ano\tMatemática\t\tFulano de Tal\t2\t3,0\t\t",
+st.subheader("Passo 1 — qual aba do Controle e a planilha (opcional)")
+st.caption(
+    "Cada aba do Controle tem as colunas em ORDEM DIFERENTE — escolha a aba antes "
+    "de colar, senão a colagem sem cabeçalho cai nas colunas erradas."
 )
+nome_aba = st.selectbox("Aba do Controle", [a["nome"] for a in ABAS], index=0)
+aba = next(a for a in ABAS if a["nome"] == nome_aba)
 
+texto_planilha = st.text_area(
+    "Cole aqui as linhas da planilha (com TAB entre colunas, igual copiado do Excel/Sheets)",
+    height=120,
+    disabled=not aba["colunas"],
+    placeholder="(selecione a aba acima primeiro)" if not aba["colunas"] else "",
+)
+if aba["colunas"]:
+    rotulos = {
+        "descricao": "Descrição", "serie": "Série", "adaptacoes": "ID Adaptações",
+        "disciplina": "Disciplina", "frente": "Frente", "professor": "Professor",
+        "qDisc": "Qtd. Discursivas", "vDisc": "Valor Discursivas",
+        "qObj": "Qtd. Objetivas", "vObj": "Valor Objetivas", "turno": "Turno",
+    }
+    ordem = " · ".join(rotulos.get(c, "(ignorar)") for c in aba["colunas"])
+    st.caption(f"Ordem de colunas desta aba: {ordem}")
 
-def parse_planilha(texto):
-    itens = []
-    for linha in texto.strip().splitlines():
-        if not linha.strip():
-            continue
-        cols = linha.split("\t")
-        cols += [""] * (9 - len(cols))
-        descricao, serie, disciplina, frente, professor, qdisc, vdisc, qobj, vobj = cols[:9]
+itens_brutos = parse_planilha(texto_planilha, aba) if aba["colunas"] else []
+vistos = set()
+itens = []
+duplicadas = 0
+for it in itens_brutos:
+    k = chave_conteudo_item(it)
+    if k in vistos:
+        duplicadas += 1
+        continue
+    vistos.add(k)
+    itens.append(it)
 
-        def numf(s):
-            s = (s or "").strip().replace(",", ".")
-            try:
-                return float(s) if s else None
-            except ValueError:
-                return None
-
-        itens.append({
-            "descricao": descricao.strip(), "serie": serie.strip() or None,
-            "disciplina": disciplina.strip() or None, "frente": frente.strip() or None,
-            "professor": professor.strip() or None,
-            "qDisc": numf(qdisc), "vDisc": numf(vdisc), "qObj": numf(qobj), "vObj": numf(vobj),
-        })
-    return itens
-
-
-itens = parse_planilha(texto_planilha)
-if itens:
-    st.caption(f"{len(itens)} linha(s) reconhecida(s) da planilha.")
+if itens_brutos:
+    msg = f"{len(itens_brutos)} linha(s) coladas, {len(itens)} prova(s) única(s) reconhecida(s)."
+    if duplicadas:
+        msg += f" ({duplicadas} linha(s) descartada(s) por serem cópia da mesma prova — código de adaptação EN/AD.)"
+    st.caption(msg)
 
 st.subheader("Passo 2 — PDFs")
 arquivos = st.file_uploader("Arraste os PDFs aqui", type=["pdf"], accept_multiple_files=True)
