@@ -107,7 +107,7 @@ if arquivos:
 
         n_graves = sum(len(g) for g in graves_por_pdf.values())
         sem_pdf = [r for r in plan_res if not r["pdf"]]
-        n_graves += sum(len(r["avisos"]) for r in sem_pdf if False)  # PL-SEMPDF é aviso, não conta
+        n_graves += sum(len(r["graves"]) for r in sem_pdf)  # PL-SEMPDF: prova faltando no lote, é grave
         n_graves += len(alertas_aba_planilha) + len(alertas_aba_pdf)
 
         if alertas_aba_planilha or alertas_aba_pdf:
@@ -119,7 +119,7 @@ if arquivos:
 
         if n_graves:
             st.error(f"❌ NÃO ENVIE. {n_graves} problema(s) grave(s) neste lote.")
-        elif any(avisos_por_pdf.values()) or sem_pdf:
+        elif any(avisos_por_pdf.values()):
             st.warning("⚠️ Nada grave. Só pontos a confirmar.")
         else:
             st.success("✅ Pode enviar. Tudo confere.")
@@ -137,6 +137,15 @@ if arquivos:
                     st.markdown(f"- 🔴 **{g['msg']}**")
                     if g.get("det"):
                         st.caption(g["det"])
+        if sem_pdf:
+            algum_grave = True
+            with st.container(border=True):
+                st.markdown("**Linhas da planilha sem PDF correspondente**")
+                for r in sem_pdf:
+                    it = r["item"]
+                    desc = " · ".join(str(x) for x in [it.get("disciplina") or "?", it.get("serie") or "?", it.get("frente") or "", it.get("professor") or ""] if x)
+                    for g in r["graves"]:
+                        st.markdown(f"- 🔴 **{g['msg']}** — {desc}")
         if not algum_grave:
             st.caption("Nenhum erro grave encontrado.")
 
@@ -177,11 +186,6 @@ if arquivos:
                         st.caption(a["det"])
         if not algum_aviso:
             st.caption("Nenhum aviso.")
-
-        if sem_pdf:
-            st.markdown("#### Linhas da planilha sem PDF correspondente (aviso)")
-            for r in sem_pdf:
-                st.markdown(f"- {r['item'].get('disciplina') or '?'} · {r['item'].get('serie') or '?'}")
 
         with st.expander("Ver cabeçalho lido de cada arquivo"):
             for pdf in pdfs:
