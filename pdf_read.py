@@ -114,7 +114,13 @@ RE_SO_NUM = re.compile(r"^\(?\s*([0-9]{1,2}\s*[,.]\s*[0-9]{1,2})\s*\)?$")
 RE_NUM_FIM = re.compile(r"([0-9]{1,2}\s*[,.]\s*[0-9]{1,2})\s*$")
 RE_NUM_QQ = re.compile(r"\b([0-9]{1,2}\s*[,.]\s*[0-9]{1,2})(?!\d)")
 RE_ANO = re.compile(r"\b(20[0-9]{2})\b")
-RE_CODIGO = re.compile(r"(?<![A-Z0-9])(A\s?[1-9][0-9]?|U\s?[1-9][0-9]?|SA\s?\d{1,2}|SE\s?\d{1,2}|PAB|PBB|AD\s?[1-4])(?![A-Z0-9])")
+
+# sem espaço entre a letra e o número: no corpo da prova é comum aparecer
+# "... equivalentes A 7, uma com..." (a letra "A" solta de uma frase, com um
+# número qualquer logo depois) — com o espaço opcional isso batia como se
+# fosse o código "A7" da prova. Código de prova real vem sempre colado
+# ("A5", "A10"), então tirar o espaço evita esse falso positivo.
+RE_CODIGO = re.compile(r"(?<![A-Z0-9])(A[1-9][0-9]?|U[1-9][0-9]?|SA\s?\d{1,2}|SE\s?\d{1,2}|PAB|PBB|AD\s?[1-4])(?![A-Z0-9])")
 
 NOME_NAT = {
     "2a_chamada": "2ª Chamada",
@@ -312,11 +318,19 @@ def parse_header(page, altura_cabecalho=0.30, disciplinas=None):
                 cab["professor"] = resto
             break
 
+    # Cada bloco tem que ser um CAMPO DE FORMULÁRIO real (rótulo seguido de
+    # ":" ou de linha pra preencher), não a palavra aparecendo solta em
+    # algum lugar do enunciado — "o PROFESSOR de Educação Física..." ou "um
+    # ALUNO acertou..." no meio de uma questão não pode contar como se
+    # fosse a caixa de cabeçalho "Professor(a): ____".
     blocos = {
-        "professor": "PROFESSOR" in tU, "aluno": "ALUNO" in tU,
-        "numero": bool(re.search(r"\bN[O0]?\s*:", tU)) or "NUMERO" in tU,
-        "turma": "TURMA" in tU, "nota": "NOTA" in tU, "valor": "VALOR" in tU,
-        "data": bool(re.search(r"/\s*20[0-9]{2}", tU)) or "DATA" in tU,
+        "professor": bool(re.search(r"\bPROFESSOR(\(A\))?\s*:", tU)),
+        "aluno": bool(re.search(r"\bALUNO(\(A\))?\s*:", tU)),
+        "numero": bool(re.search(r"\bN[O0]?\s*:", tU)),
+        "turma": bool(re.search(r"\bTURMA\s*:", tU)),
+        "nota": bool(re.search(r"\bNOTA\s*:", tU)),
+        "valor": bool(re.search(r"\bVALOR\s*:", tU)),
+        "data": bool(re.search(r"/\s*20[0-9]{2}", tU)),
     }
     cab["blocos"] = blocos
     return cab
@@ -438,6 +452,29 @@ def fp_pagina(textos_linha):
 QVALOR_RE = re.compile(r"\(\s*([0-9]{1,2}[,.][0-9]{1,2})\s*\)")
 
 
+def _valores_questoes(texto):
+    """Extrai os pontos de cada questão a partir dos "(x,y)" no texto — mas
+    descarta sequências de valores GRUDADOS um no outro (gap <= 6
+    caracteres), porque isso é uma ESCALA de rubrica de correção
+    (ex.: "(0,25)  (0,5)  (0,75)" pra um critério de redação/speaking, onde
+    o corretor escolhe UM dos valores, eles não são pontos a somar), não uma
+    lista de pontuações de questões diferentes."""
+    ms = list(QVALOR_RE.finditer(texto))
+    valores = []
+    i, n = 0, len(ms)
+    while i < n:
+        j = i
+        while j + 1 < n and (ms[j + 1].start() - ms[j].end()) <= 6:
+            j += 1
+        if j == i:
+            try:
+                valores.append(float(ms[i].group(1).replace(" ", "").replace(",", ".")))
+            except ValueError:
+                pass
+        i = j + 1
+    return valores
+
+
 def ler_pdf(caminho, nome=None, disciplinas=None, max_paginas=40):
     """Lê um PDF que pode conter MAIS DE UMA prova dentro (lote com várias
     frentes/professores concatenados — comum em arquivos de "2ª chamada",
@@ -477,11 +514,6 @@ def ler_pdf(caminho, nome=None, disciplinas=None, max_paginas=40):
                 paginas_linhas.append(textos)
                 partes.append(" ".join(textos))
                 out["linhas"].extend(textos)
-                for m in QVALOR_RE.finditer(" ".join(textos)):
-                    try:
-                        out["valores_q"].append(float(m.group(1).replace(",", ".")))
-                    except ValueError:
-                        pass
                 fp = fp_pagina(textos)
                 if fp:
                     out["paginas_fp"].append({"pagina": p + 1, "fp": fp})
@@ -523,6 +555,7 @@ def ler_pdf(caminho, nome=None, disciplinas=None, max_paginas=40):
                                 "disciplina": cab_pag["disciplina"], "etapa": cab_pag["etapa"], "serie": cab_pag["serie"],
                             })
             out["texto"] = "\n".join(partes)
+            out["valores_q"] = _valores_questoes(out["texto"])
 
             # monta os segmentos: um por cabeçalho encontrado, cobrindo até a
             # página anterior ao próximo cabeçalho (ou o fim do arquivo).
@@ -532,13 +565,7 @@ def ler_pdf(caminho, nome=None, disciplinas=None, max_paginas=40):
                 idxs = range(ini - 1, fim)
                 seg_linhas = [t for i2 in idxs for t in paginas_linhas[i2]]
                 seg_texto = "\n".join(" ".join(paginas_textos[i2]) for i2 in idxs)
-                seg_valores = []
-                for i2 in idxs:
-                    for m in QVALOR_RE.finditer(" ".join(paginas_textos[i2])):
-                        try:
-                            seg_valores.append(float(m.group(1).replace(",", ".")))
-                        except ValueError:
-                            pass
+                seg_valores = _valores_questoes(seg_texto)
                 out["segmentos"].append({
                     "pagina_ini": ini, "pagina_fim": fim, "cab": h["cab"],
                     "texto": seg_texto, "linhas": seg_linhas, "valores_q": seg_valores,
