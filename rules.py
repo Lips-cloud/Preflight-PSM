@@ -25,6 +25,102 @@ TABELA_PERIODICA_RE = re.compile(r"TABELA\s*PERI[OÓ]DICA")
 INFINITO = "∞"  # ∞
 
 
+# --- ajuste pedido em 2026-09: trava lógica de "aba errada" ---------------
+# Pelo nome do arquivo/série colada dá pra saber se o lote é de EM, EF Anos
+# Finais, EF Anos Iniciais, Simulado, PAB/PBB ou Módulo — mesmo sem entender
+# ainda a regra fina de cada um. Isso evita o caso real reportado: colar
+# planilha de "1ª Série" (EM) numa aba de "EF6|EF9" e o preflight não avisar
+# nada porque a aba errada só muda a ORDEM das colunas, não valida o
+# conteúdo contra a aba escolhida.
+GRUPO_ESPERADO_ABA = {
+    "anosIniciais": {"EFAI"},
+    "ef69cj": {"EFAF"}, "ef69vse": {"EFAF"}, "ef69cda": {"EFAF"},
+    "em_cjlourdes": {"EM"}, "em_vse": {"EM"}, "em_cda": {"EM"},
+    "modulo": None, "simulados": None, "perifericos": None, "pab_pbb": None,
+}
+# abas que são só do Bernoulli (origem do PDF, ver ler_pdf) vs. só do Módulo
+ORIGEM_ESPERADA_ABA = {
+    "anosIniciais": "bernoulli", "ef69cj": "bernoulli", "ef69vse": "bernoulli",
+    "ef69cda": "bernoulli", "em_cjlourdes": "bernoulli", "em_vse": "bernoulli",
+    "em_cda": "bernoulli", "modulo": "modulo",
+    "simulados": None, "perifericos": None, "pab_pbb": None,
+}
+
+
+def grupo_da_serie(txt):
+    """'1ª Série'/'1a serie' -> EM; '6º a 9º Ano' -> EFAF; '1º a 5º Ano' -> EFAI."""
+    tU = normU(txt or "")
+    if re.search(r"\bSERIE\b", tU):
+        return "EM"
+    m = re.search(r"\b([0-9]{1,2})\s*O?\s*ANO\b", tU)
+    if m:
+        return "EFAF" if int(m.group(1)) >= 6 else "EFAI"
+    return None
+
+
+def checar_aba(aba_id, itens=None, pdfs=None):
+    """Trava lógica: a aba do Controle escolhida bate com o CONTEÚDO colado/
+    enviado? Não substitui as 4 famílias graves — é um aviso à parte, mostrado
+    antes delas, porque se a aba está errada o resto da conferência também
+    fica sem sentido (colunas na ordem errada)."""
+    itens, pdfs = itens or [], pdfs or []
+    alertas = []
+    grupos_esperados = GRUPO_ESPERADO_ABA.get(aba_id)
+    if grupos_esperados:
+        achados = set()
+        for it in itens:
+            g = grupo_da_serie(it.get("serie"))
+            if g:
+                achados.add(g)
+        for pdf in pdfs:
+            serie_pdf = (pdf.get("cab") or {}).get("serie") or (pdf.get("do_nome") or {}).get("serie")
+            g = grupo_da_serie(serie_pdf)
+            if g:
+                achados.add(g)
+        estranhos = achados - grupos_esperados
+        if estranhos:
+            alertas.append({
+                "msg": (
+                    f"Aba do Controle pode estar errada: pelo conteúdo, isso parece ser de "
+                    f"{'/'.join(sorted(estranhos))}, mas a aba escolhida é de "
+                    f"{'/'.join(sorted(grupos_esperados))}."
+                ),
+                "det": "Confira a Série: '1ª/2ª/3ª Série' é Ensino Médio; '6º a 9º Ano' é EF Anos Finais; '1º a 5º Ano' é Anos Iniciais.",
+            })
+    origem_esperada = ORIGEM_ESPERADA_ABA.get(aba_id)
+    if origem_esperada:
+        for pdf in pdfs:
+            og = pdf.get("origem")
+            if og and og not in ("indefinida", origem_esperada):
+                alertas.append({
+                    "msg": (
+                        f"Aba do Controle pode estar errada: o arquivo {pdf.get('nome')} parece ser do "
+                        f"{'Módulo' if og == 'modulo' else 'Bernoulli'}, mas a aba escolhida é do "
+                        f"{'Módulo' if origem_esperada == 'modulo' else 'Bernoulli'}."
+                    ),
+                    "det": pdf.get("origem_como") or "",
+                })
+    if aba_id and aba_id != "simulados":
+        for it in itens:
+            texto = normU(" ".join(str(it.get(c) or "") for c in ("descricao", "serie", "adaptacoes")))
+            if re.search(r"\bSIMULADO\b", texto):
+                alertas.append({
+                    "msg": "Aba do Controle pode estar errada: uma linha da planilha parece ser de Simulado, mas a aba escolhida não é a 8 - Simulados.",
+                    "det": None,
+                })
+                break
+    if aba_id and aba_id != "pab_pbb":
+        for it in itens:
+            texto = normU(" ".join(str(it.get(c) or "") for c in ("descricao", "adaptacoes")))
+            if re.search(r"\b(PAB|PBB)\b", texto):
+                alertas.append({
+                    "msg": "Aba do Controle pode estar errada: uma linha da planilha parece ser de PAB/PBB, mas a aba escolhida não é a 10 - PAB | PBB.",
+                    "det": None,
+                })
+                break
+    return alertas
+
+
 def eh_adaptado(nome):
     return bool(ADAPT_RE.search(nome or ""))
 
