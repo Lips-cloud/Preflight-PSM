@@ -281,9 +281,17 @@ def conferir_cabecalhos(pdfs, esperado_natureza=None):
         # R04 — cabeçalho x nome do arquivo
         do_nome = pdf.get("do_nome", {})
         for campo in sorted(do_nome.keys()):
+            if campo == "disciplinas_todas":
+                continue
             vn, vc = do_nome.get(campo), c.get(campo)
             if vc is None or vn is None:
                 continue
+            if campo == "disciplina" and do_nome.get("disciplinas_todas"):
+                # nome do arquivo junta várias disciplinas ("book de provas")
+                # — só é discordância real se o cabeçalho não bater com
+                # NENHUMA das disciplinas citadas no nome.
+                if any(bate_campo(campo, vc, d) for d in do_nome["disciplinas_todas"]):
+                    continue
             if not bate_campo(campo, vc, vn):
                 r["graves"].append({
                     "cod": "R04", "msg": f"Cabeçalho e nome do arquivo discordam em {campo}",
