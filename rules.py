@@ -477,8 +477,10 @@ def hash_dup(itens_casados):
 def conferir_planilha(itens, pdfs, contar_questoes_fn):
     """Casa cada item da planilha com o melhor SEGMENTO de PDF (um arquivo
     pode trazer várias provas concatenadas — uma por frente/professor) e
-    roda PL-QTD/PL-VALOR/PL-SEMPDF (agora aviso, não bloqueia) usando só o
-    texto/valor DESSE segmento, nunca do arquivo inteiro.
+    roda PL-QTD/PL-VALOR/PL-SEMPDF usando só o texto/valor DESSE segmento,
+    nunca do arquivo inteiro. PL-SEMPDF é GRAVE: se a planilha declara uma
+    prova e não existe PDF nenhum pra ela no lote, é o caso extremo da
+    família "conteúdo faltando" — o lote está incompleto.
 
     Duas ou mais linhas da planilha podem legitimamente casar com o MESMO
     segmento — caso real: "Redação" e "Gramática" saem como um único bloco
@@ -510,8 +512,8 @@ def conferir_planilha(itens, pdfs, contar_questoes_fn):
     for c in casados:
         if not c["pdf"]:
             resultados.append({
-                "item": c["item"], "pdf": None, "graves": [], "avisos": [
-                    {"cod": "PL-SEMPDF", "msg": "Nenhum PDF corresponde a este item", "det": ""}
+                "item": c["item"], "pdf": None, "avisos": [], "graves": [
+                    {"cod": "PL-SEMPDF", "msg": "Nenhum PDF corresponde a este item da planilha — prova faltando no lote", "det": ""}
                 ],
             })
             continue
