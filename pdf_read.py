@@ -366,14 +366,31 @@ def parse_filename(nome, disciplinas=None):
     if mc:
         out["codigo"] = mc.group(1).replace(" ", "")
         out.setdefault("natureza", "regular")
-    d = _achar_disciplina(t, disciplinas)
-    if not d:
-        for k, v in _ABREV_DISC.items():
-            if re.search(r"\b" + k + r"\b", t):
-                d = v
-                break
-    if d:
-        out["disciplina"] = d
+    # "book de provas": arquivo junta várias disciplinas num PDF só (ex.:
+    # "..._FIL_HIS_QUI_VSE_..."), então o nome pode citar 2+ disciplinas.
+    # Pega TODAS na ordem em que aparecem no nome (não na ordem do dicionário
+    # de abreviações) — a primeira normalmente é a da 1ª página/segmento, mas
+    # não custa guardar todas pra não acusar R04 falso quando o cabeçalho
+    # bate com uma disciplina do meio do arquivo, não a primeira do nome.
+    achados = []
+    for dd in disciplinas:
+        dn = normU(dd)
+        m = re.search(r"\b" + re.escape(dn), t)
+        if m:
+            achados.append((m.start(), dd))
+    for k, v in _ABREV_DISC.items():
+        m = re.search(r"\b" + k + r"\b", t)
+        if m:
+            achados.append((m.start(), v))
+    achados.sort(key=lambda x: x[0])
+    todas = []
+    for _, dd in achados:
+        if dd not in todas:
+            todas.append(dd)
+    if todas:
+        out["disciplina"] = todas[0]
+        if len(todas) > 1:
+            out["disciplinas_todas"] = todas
     m = RE_ETAPA.search(t) or re.search(r"\b([1-4])\s*A?\s*ET\b", t) or re.search(r"\bET\s*([1-4])\b", t)
     if m:
         out["etapa"] = int(m.group(1))
