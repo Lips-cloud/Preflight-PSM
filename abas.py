@@ -70,7 +70,21 @@ def parse_planilha(texto, aba):
         if not linha.strip():
             continue
         cols = linha.split("\t")
-        itens.append(parse_linha(cols, colunas))
+        colunas_linha = colunas
+        # Turno + a coluna ignorada logo depois às vezes somem da colagem por
+        # completo (célula vazia que nem vira TAB) em vez de aparecer como
+        # coluna vazia — sem isso, TODAS as colunas seguintes deslizam pra
+        # esquerda (Série vira Disciplina, Disciplina vira Frente...) e o
+        # item nunca casa com PDF nenhum (caso real: aba "3 - EF6|EF9-CJ",
+        # linha sem Turno preenchido virou "disciplina: Bianca Rezende").
+        # Detecta pelo Nº de colunas coladas: se faltar exatamente 1 em
+        # relação ao esperado, assume que Turno+ignorada colapsaram numa
+        # célula só (a mais comum: linha sem turno) e realinha a partir da
+        # 3ª coluna esperada (descrição em diante), descartando qualquer
+        # coluna sobrando no fim.
+        if colunas and colunas[0] == "turno" and colunas[1] is None and len(cols) == len(colunas) - 1:
+            colunas_linha = colunas[2:]
+        itens.append(parse_linha(cols, colunas_linha))
     return itens
 
 
