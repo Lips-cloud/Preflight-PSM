@@ -4,7 +4,7 @@ from pathlib import Path
 import streamlit as st
 
 from pdf_read import ler_pdf, contar_questoes, DISCIPLINAS_PADRAO
-from rules import conferir_cabecalhos, conferir_planilha, NOME_NAT, eh_quimica, eh_adaptado, TABELA_PERIODICA_RE, INFINITO, normU, checar_aba
+from rules import conferir_cabecalhos, conferir_planilha, NOME_NAT, eh_quimica, eh_adaptado, TABELA_PERIODICA_RE, INFINITO, normU, checar_aba, tem_tabela_periodica_final
 from abas import ABAS, parse_planilha, chave_conteudo_item
 
 st.set_page_config(page_title="Preflight PSM", page_icon="🔎", layout="wide")
@@ -155,9 +155,8 @@ if arquivos:
             checks = []
             c = pdf.get("cab") or {}
             if eh_quimica(c, pdf.get("do_nome")):
-                tU_arq = normU(pdf.get("texto", ""))
-                achou = bool(TABELA_PERIODICA_RE.search(tU_arq) or TABELA_PERIODICA_RE.search(tU_arq[::-1]))
-                checks.append(("Tabela periódica", achou))
+                achou = tem_tabela_periodica_final(pdf)
+                checks.append(("Tabela periódica (últimas páginas)", achou))
             if eh_adaptado(pdf["nome"]):
                 achou = INFINITO in (pdf.get("texto") or "")
                 checks.append(("Símbolo ∞ de prova adaptada", achou))
