@@ -506,7 +506,7 @@ def ler_pdf(caminho, nome=None, disciplinas=None, max_paginas=40):
         "nome": nome, "texto": "", "paginas": None, "erro": None, "cab": None,
         "do_nome": parse_filename(nome, disciplinas), "linhas": [], "outros_cab": [],
         "valores_q": [], "paginas_fp": [], "origem": "indefinida", "origem_como": "",
-        "segmentos": [], "paginas_tag": [],
+        "segmentos": [], "paginas_tag": [], "paginas_texto": [],
     }
     out["hash"] = hash_arquivo(caminho)
     try:
@@ -572,6 +572,7 @@ def ler_pdf(caminho, nome=None, disciplinas=None, max_paginas=40):
                                 "disciplina": cab_pag["disciplina"], "etapa": cab_pag["etapa"], "serie": cab_pag["serie"],
                             })
             out["texto"] = "\n".join(partes)
+            out["paginas_texto"] = partes
             out["valores_q"] = _valores_questoes(out["texto"])
 
             # monta os segmentos: um por cabeçalho encontrado, cobrindo até a
