@@ -125,6 +125,24 @@ def eh_adaptado(nome):
     return bool(ADAPT_RE.search(nome or ""))
 
 
+def tem_tabela_periodica_final(pdf, n_paginas=2):
+    """A tabela periódica de referência (anexo pro aluno consultar) SEMPRE
+    fica nas últimas páginas do arquivo — nunca é isso que aparece dentro de
+    uma questão no meio da prova (ex.: um exercício que pede pra 'considerar
+    a representação da tabela periódica a seguir' com uma gradezinha
+    fictícia de letras gregas). Por isso, em vez de buscar a frase em todo o
+    texto do arquivo, olha só as últimas `n_paginas` páginas."""
+    paginas = pdf.get("paginas_texto") or []
+    if not paginas:
+        # fallback pra quando não temos texto por página (ex.: arquivo lido
+        # numa versão antiga do cache) — comportamento antigo, olha tudo.
+        tU = normU(pdf.get("texto", ""))
+        return bool(TABELA_PERIODICA_RE.search(tU) or TABELA_PERIODICA_RE.search(tU[::-1]))
+    finais = paginas[-n_paginas:]
+    tU = normU(" ".join(finais))
+    return bool(TABELA_PERIODICA_RE.search(tU) or TABELA_PERIODICA_RE.search(tU[::-1]))
+
+
 def eh_quimica(cab, do_nome):
     disc = (cab.get("disciplina") if cab else None) or (do_nome or {}).get("disciplina")
     if disc == "Química":
@@ -377,9 +395,7 @@ def conferir_cabecalhos(pdfs, esperado_natureza=None):
         # saem com o texto inteiro espelhado (mesmo efeito visto na tarja
         # lateral — rotação de página) — por isso confere os dois sentidos.
         if eh_quimica(c, pdf.get("do_nome")):
-            tU_arquivo = normU(pdf.get("texto", ""))
-            achou = TABELA_PERIODICA_RE.search(tU_arquivo) or TABELA_PERIODICA_RE.search(tU_arquivo[::-1])
-            if not achou:
+            if not tem_tabela_periodica_final(pdf):
                 r["graves"].append({
                     "cod": "R22", "msg": "Falta a tabela periódica ao final da prova de Química",
                     "det": "",
